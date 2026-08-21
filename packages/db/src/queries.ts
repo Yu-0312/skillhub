@@ -68,6 +68,7 @@ export const skillQueries = {
       verified?: boolean;
       limit?: number;
       offset?: number;
+      cursor?: string; // For cursor-based pagination (uses id)
       sortBy?: 'stars' | 'downloads' | 'rating' | 'updated' | 'lastDownloaded' | 'aiScore' | 'recommended';
       sortOrder?: 'asc' | 'desc';
     }
@@ -82,6 +83,7 @@ export const skillQueries = {
       verified,
       limit = 20,
       offset = 0,
+      cursor,
       sortBy = 'stars',
       sortOrder = 'desc',
     } = options;
@@ -161,6 +163,11 @@ export const skillQueries = {
       conditions.push(eq(skills.isVerified, verified));
     }
 
+    // Add cursor filter for cursor-based pagination
+    if (cursor) {
+      conditions.push(sql`${skills.id} > ${cursor}`);
+    }
+
     // Filter by platform (stored in compatibility JSON field)
     if (platform && platform !== 'all') {
       conditions.push(
@@ -202,6 +209,11 @@ export const skillQueries = {
       ? sql`${skills.latestAiScore} DESC NULLS LAST`
       : orderFn(orderByColumn);
 
+    // If cursor is provided, force sort by ID ascending for stable pagination
+    const finalOrderBy = cursor
+      ? [asc(skills.id)]
+      : [primaryOrder, desc(secondaryColumn), asc(skills.id)];
+
     // If filtering by category, use JOIN with skillCategories
     if (category) {
       const results = await db
@@ -213,9 +225,9 @@ export const skillQueries = {
             ? and(eq(skillCategories.categoryId, category), ...conditions)
             : eq(skillCategories.categoryId, category)
         )
-        .orderBy(primaryOrder, desc(secondaryColumn), asc(skills.id))
+        .orderBy(...finalOrderBy)
         .limit(limit)
-        .offset(offset);
+        .offset(cursor ? 0 : offset); // Ignore offset if using cursor
 
       return results.map((r) => r.skill);
     }
@@ -224,9 +236,9 @@ export const skillQueries = {
       .select()
       .from(skills)
       .where(conditions.length > 0 ? and(...conditions) : undefined)
-      .orderBy(primaryOrder, desc(secondaryColumn), asc(skills.id))
+      .orderBy(...finalOrderBy)
       .limit(limit)
-      .offset(offset);
+      .offset(cursor ? 0 : offset); // Ignore offset if using cursor
 
     return results;
   },
