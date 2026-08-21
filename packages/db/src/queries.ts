@@ -136,8 +136,15 @@ export const skillQueries = {
           );
         }
       } else {
+        // Use PostgreSQL tsvector for better full-text search fallback
         conditions.push(
-          sql`(${skills.name} ILIKE ${`%${query}%`} OR ${skills.description} ILIKE ${`%${query}%`} OR ${skills.githubOwner} ILIKE ${`%${query}%`} OR ${skills.githubRepo} ILIKE ${`%${query}%`})`
+          sql`(
+            ${skills.name} ILIKE ${`%${query}%`}
+            OR ${skills.description} ILIKE ${`%${query}%`}
+            OR ${skills.githubOwner} ILIKE ${`%${query}%`}
+            OR ${skills.githubRepo} ILIKE ${`%${query}%`}
+            OR to_tsvector('english', coalesce(${skills.name}, '') || ' ' || coalesce(${skills.description}, '')) @@ plainto_tsquery('english', ${query})
+          )`
         );
       }
     }
