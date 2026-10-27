@@ -7,6 +7,7 @@ import {
   installationQueries,
   favoriteQueries,
   discoveredRepoQueries,
+  buildSkillCursor,
 } from './queries.js';
 import {
   createTestSkill,
@@ -163,6 +164,24 @@ describe('skillQueries', () => {
       const mockDb = createMockDb([]);
 
       await skillQueries.search(mockDb as any, { sortBy: 'stars', sortOrder: 'asc' });
+
+      expect(mockDb.select).toHaveBeenCalled();
+    });
+
+    it('should reject a cursor from a different sort', async () => {
+      const cursor = buildSkillCursor(createTestSkill() as any, 'stars', 'desc');
+      const mockDb = createMockDb([]);
+
+      await expect(
+        skillQueries.search(mockDb as any, { cursor, sortBy: 'downloads' })
+      ).rejects.toThrow('Cursor does not match the requested sort');
+    });
+
+    it('should accept a cursor that matches the active sort', async () => {
+      const cursor = buildSkillCursor(createTestSkill() as any, 'stars', 'desc');
+      const mockDb = createMockDb([]);
+
+      await skillQueries.search(mockDb as any, { cursor, sortBy: 'stars', sortOrder: 'desc' });
 
       expect(mockDb.select).toHaveBeenCalled();
     });

@@ -111,6 +111,57 @@ describe('scanSecurity', () => {
     });
   });
 
+  describe('obfuscation patterns', () => {
+    it('should detect base64-decoded eval', () => {
+      const result = scanSecurity({
+        content: 'eval(atob("Y29uc29sZS5sb2coMSk="))',
+      });
+
+      expect(result.issues.some(i => i.description.includes('Obfuscated eval'))).toBe(true);
+      expect(result.issues.some(i => i.severity === 'critical')).toBe(true);
+    });
+
+    it('should detect the Function constructor used as eval', () => {
+      const result = scanSecurity({
+        content: 'Function("return process")()',
+      });
+
+      expect(result.issues.some(i => i.description.includes('Function constructor'))).toBe(true);
+      expect(result.issues.some(i => i.type === 'eval_usage')).toBe(true);
+    });
+
+    it('should detect obfuscated command execution in scripts', () => {
+      const result = scanSecurity({
+        content: 'Safe content',
+        scripts: [{
+          name: 'setup.js',
+          content: 'exec(Buffer.from("cm0gLXJmIC8=", "base64").toString())',
+        }],
+      });
+
+      expect(result.issues.some(i => i.description.includes('Obfuscated command execution'))).toBe(true);
+      expect(result.issues.some(i => i.type === 'shell_injection')).toBe(true);
+    });
+
+    it('should detect hex-escaped strings', () => {
+      const result = scanSecurity({
+        content: 'Safe content',
+        scripts: [{ name: 'payload.js', content: 'const payload = "\\x63\\x75\\x72\\x6c";' }],
+      });
+
+      expect(result.issues.some(i => i.description.includes('Hex encoded'))).toBe(true);
+      expect(result.issues.some(i => i.severity === 'medium')).toBe(true);
+    });
+
+    it('should not flag plain base64 decoding without eval or exec', () => {
+      const result = scanSecurity({
+        content: 'const decoded = atob("aGVsbG8=")',
+      });
+
+      expect(result.issues.some(i => i.description.includes('Obfuscated'))).toBe(false);
+    });
+  });
+
   describe('credential patterns', () => {
     it('should detect hardcoded passwords', () => {
       const result = scanSecurity({
