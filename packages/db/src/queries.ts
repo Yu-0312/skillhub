@@ -1,4 +1,5 @@
 import { eq, desc, asc, and, gte, sql, inArray, like, not } from 'drizzle-orm';
+import type { SQL } from 'drizzle-orm';
 import type { PostgresJsDatabase } from 'drizzle-orm/postgres-js';
 import postgres from 'postgres';
 import {
@@ -30,6 +31,277 @@ function getRawClientLocal() {
 }
 
 type DB = PostgresJsDatabase<typeof schema>;
+
+export type SkillSortBy =
+  | 'stars'
+  | 'downloads'
+  | 'rating'
+  | 'updated'
+  | 'lastDownloaded'
+  | 'aiScore'
+  | 'recommended'
+  | 'id';
+
+export type SkillSortOrder = 'asc' | 'desc';
+
+type SkillRow = typeof skills.$inferSelect;
+type SkillCursorValue = string | number | null;
+
+interface SkillOrderKey {
+  expr: SQL;
+  direction: SkillSortOrder;
+  nulls: 'first' | 'last';
+  kind: 'number' | 'date' | 'string';
+  getValue: (row: SkillRow) => SkillCursorValue;
+}
+
+interface ParsedSkillCursor {
+  sortBy: SkillSortBy;
+  sortOrder: SkillSortOrder;
+  keys: SkillCursorValue[];
+}
+
+const SKILL_SORT_BYS: SkillSortBy[] = [
+  'stars',
+  'downloads',
+  'rating',
+  'updated',
+  'lastDownloaded',
+  'aiScore',
+  'recommended',
+  'id',
+];
+
+type SimpleSortBy = 'stars' | 'downloads' | 'rating' | 'updated';
+
+const PRIMARY_SORT_KEYS: Record<SimpleSortBy, Omit<SkillOrderKey, 'direction' | 'nulls'>> = {
+  stars: {
+    expr: sql`${skills.githubStars}`,
+    kind: 'number',
+    getValue: (row) => row.githubStars,
+  },
+  downloads: {
+    expr: sql`${skills.downloadCount}`,
+    kind: 'number',
+    getValue: (row) => row.downloadCount,
+  },
+  rating: {
+    expr: sql`${skills.rating}`,
+    kind: 'number',
+    getValue: (row) => row.rating,
+  },
+  updated: {
+    expr: sql`${skills.updatedAt}`,
+    kind: 'date',
+    getValue: (row) => row.updatedAt.getTime(),
+  },
+};
+
+const SECONDARY_SORT_KEYS: Record<SimpleSortBy, Omit<SkillOrderKey, 'direction' | 'nulls'>> = {
+  stars: {
+    expr: sql`${skills.downloadCount}`,
+    kind: 'number',
+    getValue: (row) => row.downloadCount,
+  },
+  downloads: {
+    expr: sql`${skills.githubStars}`,
+    kind: 'number',
+    getValue: (row) => row.githubStars,
+  },
+  rating: {
+    expr: sql`${skills.githubStars}`,
+    kind: 'number',
+    getValue: (row) => row.githubStars,
+  },
+  updated: {
+    expr: sql`${skills.githubStars}`,
+    kind: 'number',
+    getValue: (row) => row.githubStars,
+  },
+};
+
+function isRecommendedSkill(row: SkillRow): boolean {
+  return (
+    (row.reviewStatus === 'ai-reviewed' || row.reviewStatus === 'verified') &&
+    row.latestAiScore !== null &&
+    row.latestAiScore >= 75
+  );
+}
+
+function getSkillOrderKeys(sortBy: SkillSortBy, sortOrder: SkillSortOrder): SkillOrderKey[] {
+  const createIdKey = (direction: SkillSortOrder): SkillOrderKey => ({
+    expr: sql`${skills.id}`,
+    direction,
+    nulls: direction === 'asc' ? 'last' : 'first',
+    kind: 'string',
+    getValue: (row) => row.id,
+  });
+
+  if (sortBy === 'id') return [createIdKey(sortOrder)];
+
+  // id is the final tie-breaker and stays ascending, matching the existing order.
+  const tieBreakerIdKey = createIdKey('asc');
+
+  if (sortBy === 'recommended') {
+    return [
+      {
+        expr: sql`CASE WHEN ${skills.reviewStatus} IN ('ai-reviewed', 'verified') AND ${skills.latestAiScore} >= 75 THEN 0 ELSE 1 END`,
+        direction: 'asc',
+        nulls: 'last',
+        kind: 'number',
+        getValue: (row) => (isRecommendedSkill(row) ? 0 : 1),
+      },
+      {
+        expr: sql`CASE WHEN ${skills.reviewStatus} IN ('ai-reviewed', 'verified') AND ${skills.latestAiScore} >= 75 THEN ${skills.latestAiScore} ELSE 0 END`,
+        direction: 'desc',
+        nulls: 'last',
+        kind: 'number',
+        getValue: (row) => (isRecommendedSkill(row) ? row.latestAiScore ?? 0 : 0),
+      },
+      {
+        expr: sql`${skills.downloadCount}`,
+        direction: 'desc',
+        nulls: 'first',
+        kind: 'number',
+        getValue: (row) => row.downloadCount,
+      },
+      tieBreakerIdKey,
+    ];
+  }
+
+  if (sortBy === 'lastDownloaded' || sortBy === 'aiScore') {
+    return [
+      {
+        expr: sortBy === 'lastDownloaded' ? sql`${skills.lastDownloadedAt}` : sql`${skills.latestAiScore}`,
+        direction: 'desc',
+        nulls: 'last',
+        kind: sortBy === 'lastDownloaded' ? 'date' : 'number',
+        getValue: (row) =>
+          sortBy === 'lastDownloaded'
+            ? (row.lastDownloadedAt ? row.lastDownloadedAt.getTime() : null)
+            : row.latestAiScore,
+      },
+      {
+        expr: sql`${skills.downloadCount}`,
+        direction: 'desc',
+        nulls: 'first',
+        kind: 'number',
+        getValue: (row) => row.downloadCount,
+      },
+      tieBreakerIdKey,
+    ];
+  }
+
+  return [
+    {
+      ...PRIMARY_SORT_KEYS[sortBy],
+      direction: sortOrder,
+      nulls: sortOrder === 'asc' ? 'last' : 'first',
+    },
+    {
+      ...SECONDARY_SORT_KEYS[sortBy],
+      direction: 'desc',
+      nulls: 'first',
+    },
+    tieBreakerIdKey,
+  ];
+}
+
+function buildSkillOrderBy(keys: SkillOrderKey[]): SQL[] {
+  return keys.map((key) => {
+    const direction = key.direction === 'asc' ? sql.raw('ASC') : sql.raw('DESC');
+    const nulls = key.nulls === 'last' ? sql.raw('NULLS LAST') : sql.raw('NULLS FIRST');
+    return sql`${key.expr} ${direction} ${nulls}`;
+  });
+}
+
+export function buildSkillCursor(
+  row: SkillRow,
+  sortBy: SkillSortBy = 'stars',
+  sortOrder: SkillSortOrder = 'desc'
+): string {
+  const keys = getSkillOrderKeys(sortBy, sortOrder).map((key) => key.getValue(row));
+  return Buffer.from(JSON.stringify({ v: 1, sortBy, sortOrder, keys }), 'utf8').toString('base64url');
+}
+
+export function parseSkillCursor(cursor: string): ParsedSkillCursor {
+  let payload: unknown;
+  try {
+    payload = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8'));
+  } catch {
+    throw new Error('Invalid cursor');
+  }
+
+  if (!payload || typeof payload !== 'object') throw new Error('Invalid cursor');
+
+  const { v, sortBy, sortOrder, keys } = payload as Record<string, unknown>;
+  if (v !== 1) throw new Error('Unsupported cursor version');
+  if (typeof sortBy !== 'string' || !SKILL_SORT_BYS.includes(sortBy as SkillSortBy)) {
+    throw new Error('Invalid cursor');
+  }
+  if (sortOrder !== 'asc' && sortOrder !== 'desc') throw new Error('Invalid cursor');
+
+  const expectedKeyCount = getSkillOrderKeys(sortBy as SkillSortBy, sortOrder).length;
+  if (!Array.isArray(keys) || keys.length !== expectedKeyCount) throw new Error('Invalid cursor');
+  for (const value of keys) {
+    if (value !== null && typeof value !== 'string' && typeof value !== 'number') {
+      throw new Error('Invalid cursor');
+    }
+  }
+
+  return {
+    sortBy: sortBy as SkillSortBy,
+    sortOrder,
+    keys: keys as SkillCursorValue[],
+  };
+}
+
+function decodeCursorValue(key: SkillOrderKey, value: SkillCursorValue): string | number | Date | null {
+  if (value === null) return null;
+
+  if (key.kind === 'date') {
+    if (typeof value !== 'number' || !Number.isFinite(value)) throw new Error('Invalid cursor');
+    return new Date(value);
+  }
+
+  if (key.kind === 'number') {
+    if (typeof value !== 'number' || !Number.isFinite(value)) throw new Error('Invalid cursor');
+    return value;
+  }
+
+  if (typeof value !== 'string') throw new Error('Invalid cursor');
+  return value;
+}
+
+function buildAfterComparison(key: SkillOrderKey, value: string | number | Date | null): SQL {
+  if (value === null) {
+    return key.nulls === 'last' ? sql`false` : sql`${key.expr} IS NOT NULL`;
+  }
+
+  if (key.direction === 'asc') {
+    return key.nulls === 'last'
+      ? sql`(${key.expr} > ${value} OR ${key.expr} IS NULL)`
+      : sql`${key.expr} > ${value}`;
+  }
+
+  return key.nulls === 'last'
+    ? sql`(${key.expr} < ${value} OR ${key.expr} IS NULL)`
+    : sql`${key.expr} < ${value}`;
+}
+
+function buildCursorCondition(keys: SkillOrderKey[], values: SkillCursorValue[]): SQL {
+  let condition: SQL | null = null;
+
+  for (let i = keys.length - 1; i >= 0; i--) {
+    const key = keys[i];
+    const value = decodeCursorValue(key, values[i]);
+    const isAfter = buildAfterComparison(key, value);
+    const isEqual = value === null ? sql`${key.expr} IS NULL` : sql`${key.expr} = ${value}`;
+    condition = condition === null ? isAfter : sql`(${isAfter} OR (${isEqual} AND ${condition}))`;
+  }
+
+  return condition ?? sql`true`;
+}
 
 /**
  * Curation filter: excludes duplicates.
@@ -68,8 +340,9 @@ export const skillQueries = {
       verified?: boolean;
       limit?: number;
       offset?: number;
-      sortBy?: 'stars' | 'downloads' | 'rating' | 'updated' | 'lastDownloaded' | 'aiScore' | 'recommended';
-      sortOrder?: 'asc' | 'desc';
+      cursor?: string;
+      sortBy?: SkillSortBy;
+      sortOrder?: SkillSortOrder;
     }
   ) => {
     const {
@@ -82,6 +355,7 @@ export const skillQueries = {
       verified,
       limit = 20,
       offset = 0,
+      cursor,
       sortBy = 'stars',
       sortOrder = 'desc',
     } = options;
@@ -161,39 +435,18 @@ export const skillQueries = {
       );
     }
 
-    const orderByColumn = {
-      stars: skills.githubStars,
-      downloads: skills.downloadCount,
-      rating: skills.rating,
-      updated: skills.updatedAt,
-      lastDownloaded: skills.lastDownloadedAt,
-      aiScore: skills.latestAiScore,
-      recommended: skills.downloadCount, // fallback column, actual ordering uses custom SQL
-    }[sortBy];
+    const orderKeys = getSkillOrderKeys(sortBy, sortOrder);
 
-    // Secondary sort: when primary values are tied/zero, fall back to another metric
-    const secondaryColumn = {
-      stars: skills.downloadCount,
-      downloads: skills.githubStars,
-      rating: skills.githubStars,
-      updated: skills.githubStars,
-      lastDownloaded: skills.downloadCount,
-      aiScore: skills.downloadCount,
-      recommended: skills.githubStars,
-    }[sortBy];
+    // Keyset pagination follows the same ordering as the requested sort.
+    if (cursor) {
+      const parsed = parseSkillCursor(cursor);
+      if (parsed.sortBy !== sortBy || parsed.sortOrder !== sortOrder) {
+        throw new Error('Cursor does not match the requested sort');
+      }
+      conditions.push(buildCursorCondition(orderKeys, parsed.keys));
+    }
 
-    const orderFn = sortOrder === 'asc' ? asc : desc;
-
-    // For lastDownloaded and aiScore sorts, use NULLS LAST so null-valued skills
-    // don't dominate the first pages (PostgreSQL puts NULLs first in DESC by default)
-    // 'recommended' sort: ai-reviewed skills with score >= 75 first (by score desc), then rest by downloads
-    const primaryOrder = sortBy === 'recommended'
-      ? sql`CASE WHEN ${skills.reviewStatus} IN ('ai-reviewed', 'verified') AND ${skills.latestAiScore} >= 75 THEN 0 ELSE 1 END ASC, CASE WHEN ${skills.reviewStatus} IN ('ai-reviewed', 'verified') AND ${skills.latestAiScore} >= 75 THEN ${skills.latestAiScore} ELSE 0 END DESC, ${skills.downloadCount} DESC`
-      : sortBy === 'lastDownloaded'
-      ? sql`${skills.lastDownloadedAt} DESC NULLS LAST`
-      : sortBy === 'aiScore'
-      ? sql`${skills.latestAiScore} DESC NULLS LAST`
-      : orderFn(orderByColumn);
+    const orderBy = buildSkillOrderBy(orderKeys);
 
     // If filtering by category, use JOIN with skillCategories
     if (category) {
@@ -206,9 +459,9 @@ export const skillQueries = {
             ? and(eq(skillCategories.categoryId, category), ...conditions)
             : eq(skillCategories.categoryId, category)
         )
-        .orderBy(primaryOrder, desc(secondaryColumn), asc(skills.id))
+        .orderBy(...orderBy)
         .limit(limit)
-        .offset(offset);
+        .offset(cursor ? 0 : offset);
 
       return results.map((r) => r.skill);
     }
@@ -217,9 +470,9 @@ export const skillQueries = {
       .select()
       .from(skills)
       .where(conditions.length > 0 ? and(...conditions) : undefined)
-      .orderBy(primaryOrder, desc(secondaryColumn), asc(skills.id))
+      .orderBy(...orderBy)
       .limit(limit)
-      .offset(offset);
+      .offset(cursor ? 0 : offset);
 
     return results;
   },

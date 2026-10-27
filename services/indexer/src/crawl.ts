@@ -7,7 +7,7 @@
 import { INSTRUCTION_FILE_PATTERNS, type SourceFormat } from 'skillhub-core';
 import { scheduleFullCrawl, scheduleIncrementalCrawl, getQueueStats, getQueue } from './queue.js';
 import { syncAllSkillsToMeilisearch, checkMeilisearchHealth } from './meilisearch-sync.js';
-import { createDb, skillQueries, categoryQueries, discoveredRepoQueries, awesomeListQueries, addRequestQueries, userQueries, sql } from '@skillhub/db';
+import { createDb, skillQueries, categoryQueries, discoveredRepoQueries, awesomeListQueries, addRequestQueries, userQueries, buildSkillCursor } from '@skillhub/db';
 import { createStrategyOrchestrator, createDeepScanCrawler, createAwesomeListCrawler, createPopularReposCrawler, createCommitsSearchCrawler } from './strategies/index.js';
 import { createCrawler } from './crawler.js';
 import { indexSkill } from './skill-indexer.js';
@@ -75,7 +75,8 @@ async function main() {
       // This approach is memory-efficient and scales to any number of skills
       const db = createDb(process.env.DATABASE_URL);
       const SYNC_BATCH_SIZE = 5000;
-      let syncOffset = 0;
+      let cursor: string | undefined;
+      let processedCount = 0;
       let totalSuccess = 0;
       let totalFailed = 0;
       let batchNumber = 0;
@@ -90,11 +91,16 @@ async function main() {
       }
 
       const totalBatches = Math.ceil(totalCount / SYNC_BATCH_SIZE);
-      console.log(`Will process in ${totalBatches} batches of ${SYNC_BATCH_SIZE}\n`);
+      console.log(`Will process in ${totalBatches} batches of ${SYNC_BATCH_SIZE} using cursor pagination\n`);
 
       for (;;) {
-        // Fetch batch from database
-        const batch = await skillQueries.search(db, { limit: SYNC_BATCH_SIZE, offset: syncOffset });
+        // Iterate in stable id order; the cursor follows the requested sort.
+        const batch = await skillQueries.search(db, {
+          limit: SYNC_BATCH_SIZE,
+          cursor,
+          sortBy: 'id',
+          sortOrder: 'asc',
+        });
         if (batch.length === 0) break;
 
         batchNumber++;
@@ -103,12 +109,13 @@ async function main() {
         const results = await syncAllSkillsToMeilisearch(batch);
         totalSuccess += results.success;
         totalFailed += results.failed;
+        processedCount += batch.length;
 
-        const progress = Math.min(100, Math.round((syncOffset + batch.length) / totalCount * 100));
+        const progress = Math.min(100, Math.round(processedCount / totalCount * 100));
         console.log(`Batch ${batchNumber}/${totalBatches}: ${results.success} synced, ${results.failed} failed (${progress}% complete)`);
 
         if (batch.length < SYNC_BATCH_SIZE) break;
-        syncOffset += SYNC_BATCH_SIZE;
+        cursor = buildSkillCursor(batch[batch.length - 1], 'id', 'asc');
       }
 
       console.log(`\n════════════════════════════════════════`);

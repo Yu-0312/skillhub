@@ -1,8 +1,34 @@
 import Redis from 'ioredis';
 
-// Extend global for memory cache fallback
+const MEMORY_FALLBACK_MAX_ENTRIES = 10_000;
+
+// Per-process fallback used only when Redis is unavailable.
 declare global {
-  var memoryCache: Map<string, number>;
+  // eslint-disable-next-line no-var
+  var __skillhubMemoryCache: Map<string, number> | undefined;
+}
+
+function shouldCountInMemory(key: string, ttlSeconds: number): boolean {
+  const now = Date.now();
+  const cache = (globalThis.__skillhubMemoryCache ??= new Map());
+
+  const expiresAt = cache.get(key);
+  if (expiresAt !== undefined) {
+    if (expiresAt > now) return false;
+    cache.delete(key);
+  }
+
+  // Bound memory usage without a background timer: prune expired entries and
+  // clear as a last resort if the process is still at the cap.
+  if (cache.size >= MEMORY_FALLBACK_MAX_ENTRIES) {
+    for (const [entryKey, entryExpiresAt] of cache) {
+      if (entryExpiresAt <= now) cache.delete(entryKey);
+    }
+    if (cache.size >= MEMORY_FALLBACK_MAX_ENTRIES) cache.clear();
+  }
+
+  cache.set(key, now + ttlSeconds * 1000);
+  return true;
 }
 
 // Redis client singleton
@@ -208,20 +234,9 @@ export const cacheTTL = {
 export async function shouldCountView(skillId: string, ip: string): Promise<boolean> {
   const client = getRedis();
 
-  // If Redis is not available, use an in-memory cache as fallback
-  // Note: This will only work per-instance, but better than allowing all
+  // Redis unavailable: fall back to a per-instance in-memory debounce window.
   if (!client) {
-    const memoryKey = `view:${skillId}:${ip}`;
-    if (global.memoryCache?.has(memoryKey)) return false;
-
-    if (!global.memoryCache) {
-      global.memoryCache = new Map();
-      // Simple cleanup every hour
-      setInterval(() => global.memoryCache.clear(), 60 * 60 * 1000);
-    }
-
-    global.memoryCache.set(memoryKey, Date.now());
-    return true;
+    return shouldCountInMemory(`view:${skillId}:${ip}`, cacheTTL.view);
   }
 
   const key = cacheKeys.skillView(skillId, ip);
@@ -246,19 +261,9 @@ export async function shouldCountView(skillId: string, ip: string): Promise<bool
 export async function shouldCountDownload(skillId: string, ip: string): Promise<boolean> {
   const client = getRedis();
 
-  // If Redis is not available, use an in-memory cache as fallback
+  // Redis unavailable: fall back to a per-instance in-memory debounce window.
   if (!client) {
-    const memoryKey = `dl:${skillId}:${ip}`;
-    if (global.memoryCache?.has(memoryKey)) return false;
-
-    if (!global.memoryCache) {
-      global.memoryCache = new Map();
-      // Simple cleanup every hour
-      setInterval(() => global.memoryCache.clear(), 60 * 60 * 1000);
-    }
-
-    global.memoryCache.set(memoryKey, Date.now());
-    return true;
+    return shouldCountInMemory(`dl:${skillId}:${ip}`, cacheTTL.download);
   }
 
   const key = cacheKeys.skillDownload(skillId, ip);

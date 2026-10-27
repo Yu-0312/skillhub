@@ -1,7 +1,7 @@
 import { NextResponse, type NextRequest } from 'next/server';
 import createIntlMiddleware from 'next-intl/middleware';
 import { locales, defaultLocale } from './i18n';
-import { csrfProtect, CsrfError, shouldProtectPath, requiresCsrfProtection, createCsrfErrorResponse } from './lib/csrf';
+import { csrfProtect, CsrfError, hasBearerAuth, shouldProtectPath, requiresCsrfProtection, createCsrfErrorResponse } from './lib/csrf';
 
 // Create the internationalization middleware
 const intlMiddleware = createIntlMiddleware({
@@ -25,6 +25,11 @@ export async function middleware(request: NextRequest): Promise<NextResponse> {
     return NextResponse.next();
   }
 
+  // API-key clients (services, scripts) authenticate with a bearer token
+  // instead of a browser session, so CSRF protection does not apply.
+  if (pathname.startsWith('/api/') && hasBearerAuth(request)) {
+    return NextResponse.next();
+  }
 
   // Handle CSRF protection for API routes
   if (shouldProtectPath(pathname) && requiresCsrfProtection(method)) {

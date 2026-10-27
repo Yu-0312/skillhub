@@ -585,6 +585,12 @@ CREATE INDEX IF NOT EXISTS idx_skills_ai_score ON skills(latest_ai_score) WHERE 
 ALTER TABLE skills ADD COLUMN IF NOT EXISTS is_malicious BOOLEAN DEFAULT FALSE;
 ALTER TABLE skill_reviews ADD COLUMN IF NOT EXISTS recommendation TEXT;
 
+-- Browse/search sort indexes (see scripts/migrations/add-skills-sort-indexes.sql
+-- for the CONCURRENTLY version used on existing production tables)
+CREATE INDEX IF NOT EXISTS idx_skills_popularity ON skills(download_count, quality_score);
+CREATE INDEX IF NOT EXISTS idx_skills_stars_quality ON skills(github_stars, quality_score);
+CREATE INDEX IF NOT EXISTS idx_skills_created_at ON skills(created_at);
+
 -- Grant permissions
 GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO postgres;
 GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO postgres;
