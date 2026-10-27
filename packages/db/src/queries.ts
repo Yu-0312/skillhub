@@ -68,7 +68,6 @@ export const skillQueries = {
       verified?: boolean;
       limit?: number;
       offset?: number;
-      cursor?: string; // For cursor-based pagination (uses id)
       sortBy?: 'stars' | 'downloads' | 'rating' | 'updated' | 'lastDownloaded' | 'aiScore' | 'recommended';
       sortOrder?: 'asc' | 'desc';
     }
@@ -83,7 +82,6 @@ export const skillQueries = {
       verified,
       limit = 20,
       offset = 0,
-      cursor,
       sortBy = 'stars',
       sortOrder = 'desc',
     } = options;
@@ -138,15 +136,8 @@ export const skillQueries = {
           );
         }
       } else {
-        // Use PostgreSQL tsvector for better full-text search fallback
         conditions.push(
-          sql`(
-            ${skills.name} ILIKE ${`%${query}%`}
-            OR ${skills.description} ILIKE ${`%${query}%`}
-            OR ${skills.githubOwner} ILIKE ${`%${query}%`}
-            OR ${skills.githubRepo} ILIKE ${`%${query}%`}
-            OR to_tsvector('english', coalesce(${skills.name}, '') || ' ' || coalesce(${skills.description}, '')) @@ plainto_tsquery('english', ${query})
-          )`
+          sql`(${skills.name} ILIKE ${`%${query}%`} OR ${skills.description} ILIKE ${`%${query}%`} OR ${skills.githubOwner} ILIKE ${`%${query}%`} OR ${skills.githubRepo} ILIKE ${`%${query}%`})`
         );
       }
     }
@@ -161,11 +152,6 @@ export const skillQueries = {
 
     if (verified !== undefined) {
       conditions.push(eq(skills.isVerified, verified));
-    }
-
-    // Add cursor filter for cursor-based pagination
-    if (cursor) {
-      conditions.push(sql`${skills.id} > ${cursor}`);
     }
 
     // Filter by platform (stored in compatibility JSON field)
@@ -209,11 +195,6 @@ export const skillQueries = {
       ? sql`${skills.latestAiScore} DESC NULLS LAST`
       : orderFn(orderByColumn);
 
-    // If cursor is provided, force sort by ID ascending for stable pagination
-    const finalOrderBy = cursor
-      ? [asc(skills.id)]
-      : [primaryOrder, desc(secondaryColumn), asc(skills.id)];
-
     // If filtering by category, use JOIN with skillCategories
     if (category) {
       const results = await db
@@ -225,9 +206,9 @@ export const skillQueries = {
             ? and(eq(skillCategories.categoryId, category), ...conditions)
             : eq(skillCategories.categoryId, category)
         )
-        .orderBy(...finalOrderBy)
+        .orderBy(primaryOrder, desc(secondaryColumn), asc(skills.id))
         .limit(limit)
-        .offset(cursor ? 0 : offset); // Ignore offset if using cursor
+        .offset(offset);
 
       return results.map((r) => r.skill);
     }
@@ -236,9 +217,9 @@ export const skillQueries = {
       .select()
       .from(skills)
       .where(conditions.length > 0 ? and(...conditions) : undefined)
-      .orderBy(...finalOrderBy)
+      .orderBy(primaryOrder, desc(secondaryColumn), asc(skills.id))
       .limit(limit)
-      .offset(cursor ? 0 : offset); // Ignore offset if using cursor
+      .offset(offset);
 
     return results;
   },
