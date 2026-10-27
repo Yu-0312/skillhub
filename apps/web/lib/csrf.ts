@@ -43,6 +43,10 @@ export function requiresCsrfProtection(method: string): boolean {
  * Bearer-authenticated requests are exempt from CSRF checks.
  * Cross-site browser requests cannot set an Authorization header, and these
  * callers use an API key rather than a browser session.
+ *
+ * This only detects that a bearer token is present; it is NOT an
+ * authentication check. Each protected route must still validate the token
+ * (see `requireAdmin`) or the session, and reject anything invalid.
  */
 export function hasBearerAuth(request: Request): boolean {
   const header = request.headers.get('authorization');

@@ -17,3 +17,13 @@ CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_skills_stars_quality
 
 CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_skills_created_at
   ON skills (created_at);
+
+-- Verify all three indexes finished successfully:
+--   SELECT indexrelid::regclass AS index_name, indisvalid
+--   FROM pg_index
+--   WHERE indexrelid IN (
+--     'idx_skills_popularity'::regclass,
+--     'idx_skills_stars_quality'::regclass,
+--     'idx_skills_created_at'::regclass
+--   );
+-- Any row with indisvalid = false must be dropped and rebuilt.

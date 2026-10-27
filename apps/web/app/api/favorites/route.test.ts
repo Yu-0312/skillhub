@@ -137,6 +137,22 @@ describe('/api/favorites', () => {
       expect(data.error).toBe('Unauthorized');
     });
 
+    it('should not treat a bearer header as authentication', async () => {
+      mockAuth.mockResolvedValue(null);
+
+      const request = new NextRequest('http://localhost:3000/api/favorites', {
+        method: 'POST',
+        body: JSON.stringify({ skillId: 'test-skill' }),
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: 'Bearer not-a-real-key',
+        },
+      });
+      const response = await POST(request);
+
+      expect(response.status).toBe(401);
+    });
+
     it('should return 400 when skillId missing', async () => {
       mockAuth.mockResolvedValue({ user: { githubId: 'gh-12345' } });
 
@@ -197,6 +213,22 @@ describe('/api/favorites', () => {
 
       expect(response.status).toBe(401);
       expect(data.error).toBe('Unauthorized');
+    });
+
+    it('should not treat a bearer header as authentication', async () => {
+      mockAuth.mockResolvedValue(null);
+
+      const request = new NextRequest('http://localhost:3000/api/favorites', {
+        method: 'DELETE',
+        body: JSON.stringify({ skillId: 'test-skill' }),
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: 'Bearer not-a-real-key',
+        },
+      });
+      const response = await DELETE(request);
+
+      expect(response.status).toBe(401);
     });
 
     it('should return 400 when skillId missing', async () => {

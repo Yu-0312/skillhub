@@ -153,6 +153,31 @@ describe('scanSecurity', () => {
       expect(result.issues.some(i => i.severity === 'medium')).toBe(true);
     });
 
+    it('should detect multiline and whitespace variants', () => {
+      const result = scanSecurity({
+        content: 'eval (\n  atob\n  ("Y29uc29sZS5sb2coMSk=")\n)',
+      });
+
+      expect(result.issues.some(i => i.description.includes('Obfuscated eval'))).toBe(true);
+    });
+
+    it('should detect nested decoding before eval', () => {
+      const result = scanSecurity({
+        content: 'eval(atob(atob("WVd4c2J3PT0=")))',
+      });
+
+      expect(result.issues.some(i => i.description.includes('Obfuscated eval'))).toBe(true);
+    });
+
+    it('should not flag a single hex escape', () => {
+      const result = scanSecurity({
+        content: 'Safe content',
+        scripts: [{ name: 'escape.js', content: 'const newline = "\\x0a";' }],
+      });
+
+      expect(result.issues.some(i => i.description.includes('Hex encoded'))).toBe(false);
+    });
+
     it('should not flag plain base64 decoding without eval or exec', () => {
       const result = scanSecurity({
         content: 'const decoded = atob("aGVsbG8=")',
