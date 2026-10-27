@@ -7,10 +7,11 @@
 import { INSTRUCTION_FILE_PATTERNS, type SourceFormat } from 'skillhub-core';
 import { scheduleFullCrawl, scheduleIncrementalCrawl, getQueueStats, getQueue } from './queue.js';
 import { syncAllSkillsToMeilisearch, checkMeilisearchHealth } from './meilisearch-sync.js';
-import { createDb, skillQueries, categoryQueries, discoveredRepoQueries, awesomeListQueries, addRequestQueries, userQueries, sql } from '@skillhub/db';
+import { createDb, skillQueries, categoryQueries, discoveredRepoQueries, awesomeListQueries, addRequestQueries, userQueries } from '@skillhub/db';
 import { createStrategyOrchestrator, createDeepScanCrawler, createAwesomeListCrawler, createPopularReposCrawler, createCommitsSearchCrawler } from './strategies/index.js';
 import { createCrawler } from './crawler.js';
 import { indexSkill } from './skill-indexer.js';
+import { parseAddRequestSkillPaths } from './skill-paths.js';
 import { TokenManager } from './token-manager.js';
 
 /**
@@ -736,15 +737,15 @@ async function main() {
         console.log('⚠️  Could not check GitHub rate limit. Proceeding anyway...\n');
       }
 
-      // Get all pending add requests
-      const pendingRequests = await addRequestQueries.getAllPending(addDb);
+      // Get add requests that still need indexing
+      const indexableRequests = await addRequestQueries.getIndexable(addDb);
 
-      if (pendingRequests.length === 0) {
-        console.log('✓ No pending add requests found');
+      if (indexableRequests.length === 0) {
+        console.log('✓ No indexable add requests found');
         break;
       }
 
-      console.log(`Found ${pendingRequests.length} pending request(s)\n`);
+      console.log(`Found ${indexableRequests.length} indexable request(s)\n`);
 
       let processedCount = 0;
       let skillsIndexed = 0;
@@ -753,7 +754,7 @@ async function main() {
       let failedCount = 0;
       let rateLimitHit = false;
 
-      for (const request of pendingRequests) {
+      for (const request of indexableRequests) {
         // Stop if we hit rate limit
         if (rateLimitHit) {
           console.log(`⏳ Rate limit hit. Remaining requests will be processed later.`);
@@ -786,7 +787,7 @@ async function main() {
           }
 
           // Parse skill paths (comma-separated)
-          const skillPaths = request.skillPath.split(',').map((p: string) => p.trim());
+          const skillPaths = parseAddRequestSkillPaths(request.skillPath);
           const indexedSkillIds: string[] = [];
           const existingSkillIds: string[] = [];
 

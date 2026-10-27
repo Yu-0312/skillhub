@@ -1,4 +1,4 @@
-import { eq, desc, asc, and, gte, sql, inArray, like, not } from 'drizzle-orm';
+import { eq, desc, asc, and, gte, sql, inArray, isNull, like, not, or } from 'drizzle-orm';
 import type { PostgresJsDatabase } from 'drizzle-orm/postgres-js';
 import postgres from 'postgres';
 import {
@@ -2266,12 +2266,23 @@ export const addRequestQueries = {
    *
    * Requests submitted through the web flow are auto-approved when SKILL.md
    * is found, so the indexer must process both pending and approved requests.
+   * Approved requests with an error message already had their attempt; they
+   * stay out of the queue until the error is cleared manually, otherwise a
+   * failed request would be retried on every run.
    */
-  getAllPending: async (db: DB) => {
+  getIndexable: async (db: DB) => {
     return db
       .select()
       .from(addRequests)
-      .where(inArray(addRequests.status, ['pending', 'approved']))
+      .where(
+        and(
+          inArray(addRequests.status, ['pending', 'approved']),
+          or(
+            eq(addRequests.status, 'pending'),
+            isNull(addRequests.errorMessage)
+          )
+        )
+      )
       .orderBy(desc(addRequests.createdAt));
   },
 

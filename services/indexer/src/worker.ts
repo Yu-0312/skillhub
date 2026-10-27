@@ -1,12 +1,13 @@
 import type { Job } from 'bullmq';
 import { Worker } from 'bullmq';
 import pLimit from 'p-limit';
-import { createDb, type Database, discoveredRepoQueries, awesomeListQueries, addRequestQueries, skillQueries, runPostCrawlCuration, sql } from '@skillhub/db';
+import { createDb, type Database, discoveredRepoQueries, awesomeListQueries, addRequestQueries, skillQueries, runPostCrawlCuration } from '@skillhub/db';
 import { GitHubCrawler, createCrawler } from './crawler.js';
 import type { IndexJobData, IndexJobResult } from './queue.js';
 import { setupRecurringJobs } from './queue.js';
 import { logMeilisearchStatus } from './meilisearch-sync.js';
 import { indexSkill } from './skill-indexer.js';
+import { parseAddRequestSkillPaths } from './skill-paths.js';
 import { createStrategyOrchestrator, createDeepScanCrawler, createAwesomeListCrawler } from './strategies/index.js';
 
 const QUEUE_NAME = 'skill-indexing';
@@ -529,23 +530,23 @@ async function processAddRequests(
   const addCrawler = createCrawler();
 
   await job.updateProgress(10);
-  console.log('Processing pending add requests...');
+  console.log('Processing indexable add requests...');
 
-  // Get all pending add requests
-  const pendingRequests = await addRequestQueries.getAllPending(database);
+  // Get add requests that still need indexing
+  const indexableRequests = await addRequestQueries.getIndexable(database);
 
-  if (pendingRequests.length === 0) {
-    console.log('No pending add requests found');
+  if (indexableRequests.length === 0) {
+    console.log('No indexable add requests found');
     return { success: true, stats: { discovered: 0, indexed: 0 } };
   }
 
-  console.log(`Found ${pendingRequests.length} pending request(s)`);
+  console.log(`Found ${indexableRequests.length} indexable request(s)`);
 
   let processedCount = 0;
   let skillsIndexed = 0;
   let failedCount = 0;
 
-  for (const request of pendingRequests) {
+  for (const request of indexableRequests) {
     console.log(`Processing request ${request.id.slice(0, 8)}...`);
 
     // Skip requests that did not discover a skill. A root-level skill is
@@ -574,11 +575,7 @@ async function processAddRequests(
       const branch = repoMeta.defaultBranch;
 
       // Parse skill paths (comma-separated)
-      const skillPaths = request.skillPath
-        .split(',')
-        .map((p: string) => p.trim())
-        .filter(Boolean)
-        .map((p: string) => p === '.' ? '' : p);
+      const skillPaths = parseAddRequestSkillPaths(request.skillPath);
       const indexedSkillIds: string[] = [];
       const existingSkillIds: string[] = [];
 
@@ -633,7 +630,7 @@ async function processAddRequests(
     }
 
     // Update progress
-    const progress = 10 + Math.floor((processedCount / pendingRequests.length) * 85);
+    const progress = 10 + Math.floor((processedCount / indexableRequests.length) * 85);
     await job.updateProgress(progress);
   }
 
@@ -643,7 +640,7 @@ async function processAddRequests(
   return {
     success: true,
     stats: {
-      discovered: pendingRequests.length,
+      discovered: indexableRequests.length,
       indexed: skillsIndexed,
       failed: failedCount,
     },
